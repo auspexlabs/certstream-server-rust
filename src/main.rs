@@ -367,13 +367,6 @@ fn spawn_signal_handler(shutdown_token: CancellationToken) {
     });
 }
 
-/// Build a fresh `OperatorRateLimiter` capped at 2 req/s, shared across all
-/// logs of the same operator so a single CDN host doesn't see a thundering
-/// herd from per-shard watchers.
-fn make_operator_limiter() -> ct::OperatorRateLimiter {
-    Arc::new(ct::OperatorLimiter::new(Duration::from_millis(500)))
-}
-
 /// Discovery + spawn pipeline. Returns `(rfc6962_count, static_ct_count)`.
 async fn discover_and_spawn(
     config: &Config,
@@ -488,9 +481,16 @@ fn spawn_pool(
     metrics::gauge!(count_gauge).set(logs.len() as f64);
 
     for log in &logs {
-        operator_limiters
-            .entry(log.operator.to_lowercase())
-            .or_insert_with(make_operator_limiter);
+        let operator = ct::normalize_operator(&log.operator);
+        operator_limiters.entry(operator.clone()).or_insert_with(|| {
+            let interval_ms = ctx
+                .config
+                .operator_rate_limits
+                .get(&operator)
+                .copied()
+                .unwrap_or(ctx.config.default_operator_rate_limit_ms);
+            Arc::new(ct::OperatorLimiter::new(Duration::from_millis(interval_ms)))
+        });
         log_tracker.register(
             log.description.clone(),
             log.normalized_url(),
@@ -502,7 +502,7 @@ fn spawn_pool(
     for (index, log) in logs.into_iter().enumerate() {
         let mut wctx = ctx.clone();
         wctx.rate_limiter = operator_limiters
-            .get(&log.operator.to_lowercase())
+            .get(&ct::normalize_operator(&log.operator))
             .cloned();
         spawn_worker_loop(log, wctx, startup_stagger_ms * index as u64, kind);
     }

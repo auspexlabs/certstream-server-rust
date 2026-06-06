@@ -41,6 +41,10 @@ ct_log:
   state_file: "certstream_state.json"
   batch_size: 256
   poll_interval_ms: 1000
+  # Shared per-operator limiter. Override keys are normalized to lowercase,
+  # whitespace-collapsed, punctuation-stripped names like "digicert inc".
+  default_operator_rate_limit_ms: 500
+  operator_rate_limits: {}
   # Master switches per protocol family. Set `rfc6962_enabled: false` once
   # you've fully cut over to static-ct logs (env: CERTSTREAM_RFC6962_ENABLED).
   rfc6962_enabled: true

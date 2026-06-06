@@ -66,6 +66,26 @@ pub(super) fn parse_retry_after(headers: &HeaderMap, log_description: &str) -> u
     }
 }
 
+/// Canonicalize CT operator names for shared limiter and config lookups.
+pub fn normalize_operator(operator: &str) -> String {
+    let mut out = String::with_capacity(operator.len());
+    let mut pending_space = false;
+    for c in operator.chars() {
+        if c.is_whitespace() {
+            if !out.is_empty() {
+                pending_space = true;
+            }
+        } else if c.is_alphanumeric() {
+            if pending_space {
+                out.push(' ');
+                pending_space = false;
+            }
+            out.extend(c.to_lowercase());
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -132,5 +152,13 @@ mod tests {
             source_id(Some(""), "https://ct.example.com/log"),
             "url:https://ct.example.com/log"
         );
+    }
+
+    #[test]
+    fn normalize_operator_collapses_case_whitespace_punctuation() {
+        assert_eq!(normalize_operator("DigiCert, Inc."), "digicert inc");
+        assert_eq!(normalize_operator("digicert inc"), "digicert inc");
+        assert_eq!(normalize_operator("  DigiCert   Inc  "), "digicert inc");
+        assert_eq!(normalize_operator("Let's Encrypt"), "lets encrypt");
     }
 }

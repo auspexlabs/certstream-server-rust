@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::net::IpAddr;
@@ -102,6 +103,12 @@ pub struct CtLogConfig {
     pub batch_size: u64,
     #[serde(default = "default_poll_interval_ms")]
     pub poll_interval_ms: u64,
+    /// Default minimum interval between requests for logs from the same operator.
+    #[serde(default = "default_operator_rate_limit_ms")]
+    pub default_operator_rate_limit_ms: u64,
+    /// Per-operator minimum request intervals, keyed by normalized operator name.
+    #[serde(default)]
+    pub operator_rate_limits: HashMap<String, u64>,
     /// Master switch for the legacy RFC 6962 watcher pool. When `false`, the
     /// Google v3 log list (and any `custom_logs`) are skipped at startup.
     /// Override with `CERTSTREAM_RFC6962_ENABLED`.
@@ -128,10 +135,16 @@ impl Default for CtLogConfig {
             state_file: default_state_file(),
             batch_size: default_batch_size(),
             poll_interval_ms: default_poll_interval_ms(),
+            default_operator_rate_limit_ms: default_operator_rate_limit_ms(),
+            operator_rate_limits: HashMap::new(),
             rfc6962_enabled: true,
             static_ct_enabled: true,
         }
     }
+}
+
+fn default_operator_rate_limit_ms() -> u64 {
+    500
 }
 
 fn default_retry_max_attempts() -> u32 {
@@ -504,6 +517,10 @@ impl Config {
         env_override!(ct_log.state_file, "CERTSTREAM_CT_LOG_STATE_FILE", some_str);
         env_override!(ct_log.batch_size, "CERTSTREAM_CT_LOG_BATCH_SIZE");
         env_override!(ct_log.poll_interval_ms, "CERTSTREAM_CT_LOG_POLL_INTERVAL_MS");
+        env_override!(
+            ct_log.default_operator_rate_limit_ms,
+            "CERTSTREAM_CT_LOG_DEFAULT_OPERATOR_RATE_LIMIT_MS"
+        );
         env_override!(ct_log.rfc6962_enabled, "CERTSTREAM_RFC6962_ENABLED");
         env_override!(ct_log.static_ct_enabled, "CERTSTREAM_STATIC_CT_ENABLED");
 
@@ -711,6 +728,8 @@ mod tests {
         assert_eq!(config.state_file, Some("certstream_state.json".to_string()));
         assert_eq!(config.batch_size, 256);
         assert_eq!(config.poll_interval_ms, 1000);
+        assert_eq!(config.default_operator_rate_limit_ms, 500);
+        assert!(config.operator_rate_limits.is_empty());
         assert!(config.rfc6962_enabled);
         assert!(config.static_ct_enabled);
     }
@@ -887,11 +906,16 @@ port: 9090
 retry_max_attempts: 5
 state_file: "my_state.json"
 batch_size: 512
+default_operator_rate_limit_ms: 750
+operator_rate_limits:
+  digicert inc: 1000
 "#;
         let config: CtLogConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config.retry_max_attempts, 5);
         assert_eq!(config.state_file, Some("my_state.json".to_string()));
         assert_eq!(config.batch_size, 512);
+        assert_eq!(config.default_operator_rate_limit_ms, 750);
+        assert_eq!(config.operator_rate_limits.get("digicert inc"), Some(&1000));
         assert_eq!(config.retry_initial_delay_ms, 1000);
     }
 
