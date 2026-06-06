@@ -69,6 +69,8 @@ hot_reload:
   enabled: false
   watch_path: null
 
+# Custom RFC6962 logs can optionally set `batch_size` and/or
+# `poll_interval_ms` to override the global `ct_log` defaults for that log.
 custom_logs: []
 
 # Static CT logs (Sunlight / static-ct-api protocol). These are merged with logs
@@ -80,7 +82,11 @@ custom_logs: []
 # fetch URL host differs from the submission URL host (e.g. mon.* vs log.*).
 # When omitted, the origin is derived from the URL by stripping scheme and
 # trailing slash.
+# `batch_size` and `poll_interval_ms` may also be set here to override the
+# global `ct_log` defaults for a specific static-CT log.
 static_logs:
   - name: "Let's Encrypt 'Sycamore' 2026h1"
     url: "https://mon.sycamore.ct.letsencrypt.org/2026h1/"
     log_origin: "log.sycamore.ct.letsencrypt.org/2026h1"
+    # batch_size: 128
+    # poll_interval_ms: 2000

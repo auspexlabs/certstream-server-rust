@@ -504,6 +504,16 @@ fn spawn_pool(
         wctx.rate_limiter = operator_limiters
             .get(&log.operator.to_lowercase())
             .cloned();
+        if log.batch_size.is_some() || log.poll_interval_ms.is_some() {
+            let mut cfg = (*ctx.config).clone();
+            if let Some(batch_size) = log.batch_size {
+                cfg.batch_size = batch_size;
+            }
+            if let Some(poll_interval_ms) = log.poll_interval_ms {
+                cfg.poll_interval_ms = poll_interval_ms;
+            }
+            wctx.config = Arc::new(cfg);
+        }
         spawn_worker_loop(log, wctx, startup_stagger_ms * index as u64, kind);
     }
     count

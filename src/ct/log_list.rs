@@ -95,6 +95,10 @@ pub struct CtLog {
     /// Base64-encoded log ID (SHA-256 of the log's public key). Used to dedupe
     /// logs that appear in multiple log lists (e.g. Google + Apple).
     pub log_id: Option<String>,
+    /// Optional per-log override; `None` means use the global CT config.
+    pub batch_size: Option<u64>,
+    /// Optional per-log override; `None` means use the global CT config.
+    pub poll_interval_ms: Option<u64>,
     state: Option<LogState>,
 }
 
@@ -129,6 +133,8 @@ impl From<CustomCtLog> for CtLog {
             log_type: LogType::Rfc6962,
             log_origin: None,
             log_id: None,
+            batch_size: custom.batch_size,
+            poll_interval_ms: custom.poll_interval_ms,
             state: None,
         }
     }
@@ -143,6 +149,8 @@ impl From<StaticCtLog> for CtLog {
             log_type: LogType::StaticCt,
             log_origin: static_log.log_origin,
             log_id: None,
+            batch_size: static_log.batch_size,
+            poll_interval_ms: static_log.poll_interval_ms,
             state: None,
         }
     }
@@ -167,6 +175,8 @@ fn make_test_log(description: &str, url: &str, state: Option<LogState>) -> CtLog
         log_type: LogType::Rfc6962,
         log_origin: None,
         log_id: None,
+        batch_size: None,
+        poll_interval_ms: None,
         state,
     }
 }
@@ -219,6 +229,8 @@ async fn fetch_one_list(client: &Client, url: &str) -> Result<Vec<CtLog>, LogLis
                 log_type: LogType::Rfc6962,
                 log_origin: None,
                 log_id: raw.log_id,
+                batch_size: None,
+                poll_interval_ms: None,
                 state: raw.state,
             });
         }
@@ -231,6 +243,8 @@ async fn fetch_one_list(client: &Client, url: &str) -> Result<Vec<CtLog>, LogLis
                 log_type: LogType::StaticCt,
                 log_origin: Some(origin),
                 log_id: raw.log_id,
+                batch_size: None,
+                poll_interval_ms: None,
                 state: raw.state,
             });
         }
@@ -428,13 +442,30 @@ mod tests {
         let custom = CustomCtLog {
             name: "My Custom Log".to_string(),
             url: "https://custom.example.com/ct".to_string(),
+            batch_size: None,
+            poll_interval_ms: None,
         };
         let ct_log = CtLog::from(custom);
         assert_eq!(ct_log.description, "My Custom Log");
         assert_eq!(ct_log.url, "https://custom.example.com/ct");
         assert_eq!(ct_log.operator, "Custom");
         assert_eq!(ct_log.log_type, LogType::Rfc6962);
+        assert!(ct_log.batch_size.is_none());
+        assert!(ct_log.poll_interval_ms.is_none());
         assert!(ct_log.state.is_none());
+    }
+
+    #[test]
+    fn test_from_custom_ct_log_preserves_overrides() {
+        let custom = CustomCtLog {
+            name: "My Custom Log".to_string(),
+            url: "https://custom.example.com/ct".to_string(),
+            batch_size: Some(128),
+            poll_interval_ms: Some(2500),
+        };
+        let ct_log = CtLog::from(custom);
+        assert_eq!(ct_log.batch_size, Some(128));
+        assert_eq!(ct_log.poll_interval_ms, Some(2500));
     }
 
     #[test]
@@ -443,6 +474,8 @@ mod tests {
             name: "LE Willow 2025h2".to_string(),
             url: "https://mon.willow.ct.letsencrypt.org/2025h2d/".to_string(),
             log_origin: Some("log.willow.ct.letsencrypt.org/2025h2d".to_string()),
+            batch_size: None,
+            poll_interval_ms: None,
         };
         let ct_log = CtLog::from(static_log);
         assert_eq!(ct_log.description, "LE Willow 2025h2");
@@ -456,7 +489,23 @@ mod tests {
             ct_log.log_origin.as_deref(),
             Some("log.willow.ct.letsencrypt.org/2025h2d")
         );
+        assert!(ct_log.batch_size.is_none());
+        assert!(ct_log.poll_interval_ms.is_none());
         assert!(ct_log.state.is_none());
+    }
+
+    #[test]
+    fn test_from_static_ct_log_preserves_overrides() {
+        let static_log = StaticCtLog {
+            name: "LE Willow 2025h2".to_string(),
+            url: "https://mon.willow.ct.letsencrypt.org/2025h2d/".to_string(),
+            log_origin: Some("log.willow.ct.letsencrypt.org/2025h2d".to_string()),
+            batch_size: Some(64),
+            poll_interval_ms: Some(3000),
+        };
+        let ct_log = CtLog::from(static_log);
+        assert_eq!(ct_log.batch_size, Some(64));
+        assert_eq!(ct_log.poll_interval_ms, Some(3000));
     }
 
     #[test]
