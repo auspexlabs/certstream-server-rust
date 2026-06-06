@@ -38,6 +38,9 @@ macro_rules! env_override {
 pub struct CustomCtLog {
     pub name: String,
     pub url: String,
+    /// Optional base64-encoded CT log ID for identity checks and deduplication.
+    #[serde(default)]
+    pub log_id: Option<String>,
     /// Optional per-log override; absent entries inherit `ct_log.batch_size`.
     #[serde(default)]
     pub batch_size: Option<u64>,
@@ -55,6 +58,9 @@ pub struct StaticCtLog {
     /// When absent, the origin is derived from the URL by stripping the scheme and trailing slash.
     #[serde(default)]
     pub log_origin: Option<String>,
+    /// Optional base64-encoded CT log ID for identity checks and deduplication.
+    #[serde(default)]
+    pub log_id: Option<String>,
     /// Optional per-log override; absent entries inherit `ct_log.batch_size`.
     #[serde(default)]
     pub batch_size: Option<u64>,
@@ -774,6 +780,7 @@ url: "https://test.example.com/log/"
         let log: StaticCtLog = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(log.name, "Test Log");
         assert_eq!(log.url, "https://test.example.com/log/");
+        assert!(log.log_id.is_none());
         assert!(log.batch_size.is_none());
         assert!(log.poll_interval_ms.is_none());
     }
@@ -787,6 +794,7 @@ url: "https://custom.example.com/ct"
         let log: CustomCtLog = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(log.name, "Custom Log");
         assert_eq!(log.url, "https://custom.example.com/ct");
+        assert!(log.log_id.is_none());
         assert!(log.batch_size.is_none());
         assert!(log.poll_interval_ms.is_none());
     }
@@ -796,10 +804,12 @@ url: "https://custom.example.com/ct"
         let yaml = r#"
 name: "Custom Log"
 url: "https://custom.example.com/ct"
+log_id: "custom-log-id"
 batch_size: 128
 poll_interval_ms: 2500
 "#;
         let log: CustomCtLog = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(log.log_id.as_deref(), Some("custom-log-id"));
         assert_eq!(log.batch_size, Some(128));
         assert_eq!(log.poll_interval_ms, Some(2500));
     }
@@ -810,11 +820,13 @@ poll_interval_ms: 2500
 name: "Static Log"
 url: "https://static.example.com/log/"
 log_origin: "static.example.com/log"
+log_id: "static-log-id"
 batch_size: 64
 poll_interval_ms: 3000
 "#;
         let log: StaticCtLog = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(log.log_origin.as_deref(), Some("static.example.com/log"));
+        assert_eq!(log.log_id.as_deref(), Some("static-log-id"));
         assert_eq!(log.batch_size, Some(64));
         assert_eq!(log.poll_interval_ms, Some(3000));
     }

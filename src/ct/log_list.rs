@@ -56,12 +56,14 @@ struct RawTiledLog {
     state: Option<LogState>,
 }
 
-/// Mirror of the v3 log-list `state` object. Prod code only branches on
-/// `rejected`/`retired`; `usable` and `readonly` are declared so serde tolerates
-/// the full schema and tests can assert against them.
+/// Mirror of the v3 log-list `state` object.
 #[derive(Debug, Clone, Deserialize)]
 #[allow(dead_code)]
 struct LogState {
+    #[serde(default)]
+    pending: Option<StateInfo>,
+    #[serde(default)]
+    qualified: Option<StateInfo>,
     #[serde(default)]
     usable: Option<StateInfo>,
     #[serde(default)]
@@ -106,11 +108,16 @@ impl CtLog {
     pub fn is_usable(&self) -> bool {
         match &self.state {
             Some(state) => {
-                // Include all logs except rejected and retired
-                state.rejected.is_none() && state.retired.is_none()
+                let allowed = state.qualified.is_some()
+                    || state.usable.is_some()
+                    || state.readonly.is_some();
+                let disallowed = state.retired.is_some() || state.rejected.is_some();
+                allowed && !disallowed
             }
-            // state: null - include these too (e.g., Solera logs that work but aren't marked usable yet)
-            None => true,
+            // Catalog-discovered logs need an explicit positive lifecycle state.
+            // Local custom/static logs are appended after filtering and remain an
+            // explicit operator override path for logs without catalog state.
+            None => false,
         }
     }
 
@@ -132,7 +139,7 @@ impl From<CustomCtLog> for CtLog {
             operator: "Custom".to_string(),
             log_type: LogType::Rfc6962,
             log_origin: None,
-            log_id: None,
+            log_id: custom.log_id,
             batch_size: custom.batch_size,
             poll_interval_ms: custom.poll_interval_ms,
             state: None,
@@ -148,7 +155,7 @@ impl From<StaticCtLog> for CtLog {
             operator: "Static CT".to_string(),
             log_type: LogType::StaticCt,
             log_origin: static_log.log_origin,
-            log_id: None,
+            log_id: static_log.log_id,
             batch_size: static_log.batch_size,
             poll_interval_ms: static_log.poll_interval_ms,
             state: None,
@@ -164,6 +171,43 @@ fn submission_url_to_origin(submission_url: &str) -> String {
         .trim_start_matches("http://")
         .trim_end_matches('/')
         .to_string()
+}
+
+pub fn local_override_conflicts(discovered: &[CtLog], overrides: &[CtLog]) -> Vec<String> {
+    let mut by_id: std::collections::HashMap<&str, &CtLog> = std::collections::HashMap::new();
+    for log in discovered {
+        if let Some(id) = log.log_id.as_deref().filter(|id| !id.is_empty()) {
+            by_id.insert(id, log);
+        }
+    }
+
+    let mut conflicts = Vec::new();
+    for override_log in overrides {
+        let Some(id) = override_log.log_id.as_deref().filter(|id| !id.is_empty()) else {
+            continue;
+        };
+        let Some(discovered_log) = by_id.get(id) else {
+            continue;
+        };
+
+        if override_log.log_type != discovered_log.log_type {
+            conflicts.push(format!(
+                "override '{}' (log_id {id}) has log_type {:?} but discovered log has {:?}",
+                override_log.description, override_log.log_type, discovered_log.log_type
+            ));
+        }
+
+        let override_url = override_log.normalized_url();
+        let discovered_url = discovered_log.normalized_url();
+        if override_url != discovered_url {
+            conflicts.push(format!(
+                "override '{}' (log_id {id}) url '{override_url}' disagrees with discovered url '{discovered_url}'",
+                override_log.description
+            ));
+        }
+    }
+
+    conflicts
 }
 
 #[cfg(test)]
@@ -344,66 +388,99 @@ mod tests {
     #[test]
     fn test_is_usable_no_state() {
         let log = make_test_log("test", "https://ct.example.com", None);
-        assert!(log.is_usable());
+        assert!(!log.is_usable());
+    }
+
+    fn state(
+        pending: bool,
+        qualified: bool,
+        usable: bool,
+        readonly: bool,
+        retired: bool,
+        rejected: bool,
+    ) -> LogState {
+        let info = |present: bool| {
+            present.then(|| StateInfo {
+                _timestamp: "2024-01-01T00:00:00Z".to_string(),
+            })
+        };
+        LogState {
+            pending: info(pending),
+            qualified: info(qualified),
+            usable: info(usable),
+            readonly: info(readonly),
+            retired: info(retired),
+            rejected: info(rejected),
+        }
     }
 
     #[test]
     fn test_is_usable_usable_state() {
-        let state = LogState {
-            usable: Some(StateInfo {
-                _timestamp: "2024-01-01T00:00:00Z".to_string(),
-            }),
-            readonly: None,
-            retired: None,
-            rejected: None,
-        };
-        let log = make_test_log("test", "https://ct.example.com", Some(state));
+        let log = make_test_log(
+            "test",
+            "https://ct.example.com",
+            Some(state(false, false, true, false, false, false)),
+        );
         assert!(log.is_usable());
     }
 
     #[test]
+    fn test_is_usable_qualified_state() {
+        let log = make_test_log(
+            "test",
+            "https://ct.example.com",
+            Some(state(false, true, false, false, false, false)),
+        );
+        assert!(log.is_usable());
+    }
+
+    #[test]
+    fn test_is_usable_readonly_state() {
+        let log = make_test_log(
+            "test",
+            "https://ct.example.com",
+            Some(state(false, false, false, true, false, false)),
+        );
+        assert!(log.is_usable());
+    }
+
+    #[test]
+    fn test_is_usable_pending_state() {
+        let log = make_test_log(
+            "test",
+            "https://ct.example.com",
+            Some(state(true, false, false, false, false, false)),
+        );
+        assert!(!log.is_usable());
+    }
+
+    #[test]
     fn test_is_usable_retired() {
-        let state = LogState {
-            usable: None,
-            readonly: None,
-            retired: Some(StateInfo {
-                _timestamp: "2024-01-01T00:00:00Z".to_string(),
-            }),
-            rejected: None,
-        };
-        let log = make_test_log("test", "https://ct.example.com", Some(state));
+        let log = make_test_log(
+            "test",
+            "https://ct.example.com",
+            Some(state(false, false, false, false, true, false)),
+        );
         assert!(!log.is_usable());
     }
 
     #[test]
     fn test_is_usable_rejected() {
-        let state = LogState {
-            usable: None,
-            readonly: None,
-            retired: None,
-            rejected: Some(StateInfo {
-                _timestamp: "2024-01-01T00:00:00Z".to_string(),
-            }),
-        };
-        let log = make_test_log("test", "https://ct.example.com", Some(state));
+        let log = make_test_log(
+            "test",
+            "https://ct.example.com",
+            Some(state(false, false, false, false, false, true)),
+        );
         assert!(!log.is_usable());
     }
 
     #[test]
     fn test_is_usable_both_retired_and_rejected() {
-        let state = LogState {
-            usable: Some(StateInfo {
-                _timestamp: "2023-01-01T00:00:00Z".to_string(),
-            }),
-            readonly: None,
-            retired: Some(StateInfo {
-                _timestamp: "2024-01-01T00:00:00Z".to_string(),
-            }),
-            rejected: Some(StateInfo {
-                _timestamp: "2024-06-01T00:00:00Z".to_string(),
-            }),
-        };
-        let log = make_test_log("test", "https://ct.example.com", Some(state));
+        let log = make_test_log(
+            "test",
+            "https://ct.example.com",
+            Some(state(false, false, true, false, true, true)),
+        );
         assert!(!log.is_usable());
     }
 
@@ -442,6 +519,7 @@ mod tests {
         let custom = CustomCtLog {
             name: "My Custom Log".to_string(),
             url: "https://custom.example.com/ct".to_string(),
+            log_id: None,
             batch_size: None,
             poll_interval_ms: None,
         };
@@ -450,6 +528,7 @@ mod tests {
         assert_eq!(ct_log.url, "https://custom.example.com/ct");
         assert_eq!(ct_log.operator, "Custom");
         assert_eq!(ct_log.log_type, LogType::Rfc6962);
+        assert!(ct_log.log_id.is_none());
         assert!(ct_log.batch_size.is_none());
         assert!(ct_log.poll_interval_ms.is_none());
         assert!(ct_log.state.is_none());
@@ -460,10 +539,12 @@ mod tests {
         let custom = CustomCtLog {
             name: "My Custom Log".to_string(),
             url: "https://custom.example.com/ct".to_string(),
+            log_id: Some("custom-log-id".to_string()),
             batch_size: Some(128),
             poll_interval_ms: Some(2500),
         };
         let ct_log = CtLog::from(custom);
+        assert_eq!(ct_log.log_id.as_deref(), Some("custom-log-id"));
         assert_eq!(ct_log.batch_size, Some(128));
         assert_eq!(ct_log.poll_interval_ms, Some(2500));
     }
@@ -474,6 +555,7 @@ mod tests {
             name: "LE Willow 2025h2".to_string(),
             url: "https://mon.willow.ct.letsencrypt.org/2025h2d/".to_string(),
             log_origin: Some("log.willow.ct.letsencrypt.org/2025h2d".to_string()),
+            log_id: None,
             batch_size: None,
             poll_interval_ms: None,
         };
@@ -489,6 +571,7 @@ mod tests {
             ct_log.log_origin.as_deref(),
             Some("log.willow.ct.letsencrypt.org/2025h2d")
         );
+        assert!(ct_log.log_id.is_none());
         assert!(ct_log.batch_size.is_none());
         assert!(ct_log.poll_interval_ms.is_none());
         assert!(ct_log.state.is_none());
@@ -500,12 +583,47 @@ mod tests {
             name: "LE Willow 2025h2".to_string(),
             url: "https://mon.willow.ct.letsencrypt.org/2025h2d/".to_string(),
             log_origin: Some("log.willow.ct.letsencrypt.org/2025h2d".to_string()),
+            log_id: Some("static-log-id".to_string()),
             batch_size: Some(64),
             poll_interval_ms: Some(3000),
         };
         let ct_log = CtLog::from(static_log);
+        assert_eq!(ct_log.log_id.as_deref(), Some("static-log-id"));
         assert_eq!(ct_log.batch_size, Some(64));
         assert_eq!(ct_log.poll_interval_ms, Some(3000));
+    }
+
+    #[test]
+    fn local_override_conflicts_detects_identity_mismatch() {
+        let mut discovered = make_test_log("disc", "https://mon.example.com/log", None);
+        discovered.log_type = LogType::StaticCt;
+        discovered.log_id = Some("logid-x".to_string());
+
+        let mut ok = make_test_log("ok", "https://mon.example.com/log/", None);
+        ok.log_type = LogType::StaticCt;
+        ok.log_id = Some("logid-x".to_string());
+        assert!(
+            local_override_conflicts(std::slice::from_ref(&discovered), &[ok]).is_empty(),
+            "a matching override must not conflict"
+        );
+
+        let mut bad_url = make_test_log("bad-url", "https://other.example.com/log", None);
+        bad_url.log_type = LogType::StaticCt;
+        bad_url.log_id = Some("logid-x".to_string());
+        assert!(
+            !local_override_conflicts(std::slice::from_ref(&discovered), &[bad_url]).is_empty()
+        );
+
+        let mut bad_type = make_test_log("bad-type", "https://mon.example.com/log", None);
+        bad_type.log_type = LogType::Rfc6962;
+        bad_type.log_id = Some("logid-x".to_string());
+        assert!(
+            !local_override_conflicts(std::slice::from_ref(&discovered), &[bad_type]).is_empty()
+        );
+
+        let mut additive = make_test_log("additive", "https://new.example.com/log", None);
+        additive.log_id = Some("logid-y".to_string());
+        assert!(local_override_conflicts(&[discovered], &[additive]).is_empty());
     }
 
     #[test]

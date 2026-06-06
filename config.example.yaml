@@ -69,13 +69,13 @@ hot_reload:
   enabled: false
   watch_path: null
 
-# Custom RFC6962 logs can optionally set `batch_size` and/or
-# `poll_interval_ms` to override the global `ct_log` defaults for that log.
+# Custom RFC6962 logs can optionally set `log_id`, `batch_size`, and/or
+# `poll_interval_ms`. `log_id` enables duplicate-source protection.
 custom_logs: []
 
 # Static CT logs (Sunlight / static-ct-api protocol). These are merged with logs
-# discovered via `ct_logs_url` and `additional_log_lists` (deduped by URL — a
-# config entry overrides discovery, e.g. when you need a custom `log_origin`).
+# discovered via `ct_logs_url` and `additional_log_lists`. When `log_id` is set,
+# it is used for identity checks; id-less entries keep URL-based replacement.
 #
 # `url` is the monitoring prefix (often `mon.*`) used to fetch checkpoint and
 # tile data. `log_origin` overrides the expected checkpoint origin when the
@@ -88,5 +88,6 @@ static_logs:
   - name: "Let's Encrypt 'Sycamore' 2026h1"
     url: "https://mon.sycamore.ct.letsencrypt.org/2026h1/"
     log_origin: "log.sycamore.ct.letsencrypt.org/2026h1"
+    # log_id: "base64-sha256-log-id"
     # batch_size: 128
     # poll_interval_ms: 2000
